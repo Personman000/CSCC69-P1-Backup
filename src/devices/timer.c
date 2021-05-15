@@ -29,6 +29,7 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
+struct list sleep_list;
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -37,6 +38,7 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init(&sleep_list);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -84,6 +86,12 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+struct sleep_data{struct list_elem elem; tid_t tid; int64_t sleep_ticks};
+static bool time_less (const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED){
+  struct sleep_data a = list_entry (a_, struct sleep_data, elem);
+  struct sleep_data b = list_entry (b_, struct sleep_data, elem);
+  return a->sleep_ticks < b->sleep_ticks;}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -91,9 +99,12 @@ timer_sleep (int64_t ticks)
 {
   int64_t start = timer_ticks ();
 
-  ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  struct sleep_data sleep_data;
+  sleep_data.tid = thread_current->tid;
+  sleep_data.sleep_ticks = timer_elapsed (start) + ticks;
+
+  list_push_front(&sleep_list, sleep_data->elem);
+  thread_block();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
