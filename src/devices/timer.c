@@ -29,7 +29,7 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
-struct list sleep_list;
+static struct list sleep_list;
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -86,24 +86,25 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
-struct sleep_data{struct list_elem elem; tid_t tid; int64_t sleep_ticks};
-static bool time_less (const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED){
-  struct sleep_data a = list_entry (a_, struct sleep_data, elem);
-  struct sleep_data b = list_entry (b_, struct sleep_data, elem);
-  return a->sleep_ticks < b->sleep_ticks;}
-
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
+struct sleep_data{struct list_elem elem;struct thread *t;int64_t sleep_ticks};
+bool time_less(struct list_elem *a_, struct list_elem *b_, void *aux UNUSED) 
+{
+  const struct sleep_data *a = list_entry (a_, struct sleep_data, elem);
+  const struct sleep_data *b = list_entry (b_, struct sleep_data, elem);
+  
+  return a->sleep_ticks < b->sleep_ticks;
+}
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
-
-  struct sleep_data sleep_data;
-  sleep_data.tid = thread_current->tid;
-  sleep_data.sleep_ticks = timer_elapsed (start) + ticks;
-
-  list_push_front(&sleep_list, sleep_data->elem);
+  struct sleep_data *sleep_data = malloc(sizeof *sleep_data);
+  sleep_data->t = thread_current();
+  sleep_data->sleep_ticks = timer_ticks() + ticks;
+  
+  list_insert_ordered(&sleep_list, &sleep_data->elem, time_less, NULL);
+  intr_set_level(INTR_OFF);
   thread_block();
 }
 
@@ -183,6 +184,17 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  
+  list_init(&sleep_list);
+  struct sleep_data *sleep_data;
+  sleep_data = list_entry(list_head (&sleep_list), struct sleep_data, elem);
+  while(sleep_data->sleep_ticks < ticks)
+  {
+    list_rend(&sleep_data);
+    print("\n");
+    thread_unblock(sleep_data->t);
+    sleep_data = list_entry(list_head (&sleep_list), struct sleep_data, elem);
+  }
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
